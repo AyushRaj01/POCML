@@ -1,0 +1,36 @@
+# Generate date-wise predictions for the next 30 days
+days_to_predict = 30
+last_sequence = scaled_data[-sequence_length:]
+
+future_predictions = []
+
+for _ in range(days_to_predict):
+    next_value = model.predict(last_sequence.reshape(1, sequence_length, len(features)))
+    future_predictions.append(next_value[0][0])
+    
+    # Update the last sequence by removing the first entry and adding the predicted value
+    last_sequence = np.vstack([last_sequence[1:], np.zeros((1, len(features)))])
+    last_sequence[-1, features.index(target)] = next_value
+
+# Inverse transform the future predictions
+future_predictions_placeholder = np.zeros((days_to_predict, len(features)))
+future_predictions_placeholder[:, features.index(target)] = future_predictions
+
+future_predictions_actual = scaler.inverse_transform(future_predictions_placeholder)[:, features.index(target)]
+
+# Generate future dates
+last_date = data['Interval'].iloc[-1]
+future_dates = pd.date_range(last_date, periods=days_to_predict+1, freq='D')[1:]
+
+# Print the predictions
+predictions_df = pd.DataFrame({'Date': future_dates, 'Predicted Average': future_predictions_actual})
+print(predictions_df)
+
+# Plot the predictions
+plt.figure(figsize=(10,6))
+plt.plot(predictions_df['Date'], predictions_df['Predicted Average'], color='green', label='Predicted Average (Next 30 Days)')
+plt.title('Average Forecasting for the Next 30 Days')
+plt.xlabel('Date')
+plt.ylabel('Average')
+plt.legend()
+plt.show()
