@@ -1,0 +1,43 @@
+# Number of days to predict
+days_to_predict = 30
+
+# Initialize a list to store predicted values
+future_predictions = []
+
+# Get the last sequence from the validation set
+last_sequence = X_val[-1]  # This is the last sequence used in validation
+
+for _ in range(days_to_predict):
+    # Predict the next value
+    next_value = model.predict(np.expand_dims(last_sequence, axis=0))
+    
+    # Append the predicted value to future predictions
+    future_predictions.append(next_value[0][0])
+    
+    # Create a new sequence by appending the predicted value to the last sequence
+    # Replace the target feature's value with the prediction
+    new_sequence = np.vstack([last_sequence[1:], np.zeros((1, last_sequence.shape[1]))])
+    new_sequence[-1, features.index(target)] = next_value
+    
+    # Update the last sequence for the next prediction
+    last_sequence = new_sequence
+
+# Inverse transform the future predictions
+future_predictions_placeholder = np.zeros((days_to_predict, len(features)))
+future_predictions_placeholder[:, features.index(target)] = future_predictions
+future_predictions_actual = scaler.inverse_transform(future_predictions_placeholder)[:, features.index(target)]
+
+# Create a date range for the next month
+last_date = data['Interval'].iloc[-1]
+future_dates = pd.date_range(last_date, periods=days_to_predict+1, freq='D')[1:]
+
+# Plot the results
+plt.figure(figsize=(10,6))
+plt.plot(data['Interval'].iloc[-len(y_val):], y_val_actual_actual[-len(plot_dates):], color='blue', label='Actual Average')
+plt.plot(data['Interval'].iloc[-len(y_val):], y_pred_actual[-len(plot_dates):], color='red', label='Predicted Average')
+plt.plot(future_dates, future_predictions_actual, color='green', marker='o', linestyle='dashed', label='Future Predictions')
+plt.title('Average Forecasting with Future Predictions')
+plt.xlabel('Date')
+plt.ylabel('Average')
+plt.legend()
+plt.show()
