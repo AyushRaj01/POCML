@@ -1,0 +1,24 @@
+# Import the PSWindowsUpdate module
+Import-Module PSWindowsUpdate
+
+# Enable Windows Update service if it is disabled
+Set-Service -Name wuauserv -StartupType Manual
+Start-Service -Name wuauserv
+
+# Search for available updates
+Write-Host "Searching for available updates..."
+$updates = Get-WindowsUpdate
+
+if ($updates) {
+    # Download and install updates
+    Write-Host "Updates found. Installing..."
+    Install-WindowsUpdate -AcceptAll -AutoReboot
+} else {
+    Write-Host "No updates available."
+}
+
+# Disable Windows Update service again if needed
+Stop-Service -Name wuauserv
+Set-Service -Name wuauserv -StartupType Disabled
+
+Write-Host "Patching completed."
