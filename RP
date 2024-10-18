@@ -1,0 +1,71 @@
+# Path to server list and output files
+$serverList = Get-Content -Path "C:\Temp\Servers.txt"
+$finalCsvPath = "\\1.1.1.1\C$\Final_Details.csv"
+
+# Initialize final CSV file if it doesn't exist
+if (-not (Test-Path $finalCsvPath)) {
+    # Create CSV with headers
+    [PSCustomObject]@{
+        "ComputerName" = ""
+        "LastRebootTime" = ""
+        "Latest Patch Installed Date" = ""
+        "Patches Installed" = ""
+    } | Export-Csv -Path $finalCsvPath -NoTypeInformation
+}
+
+foreach ($server in $serverList) {
+    try {
+        # Try block to run commands on each server
+        Invoke-Command -ComputerName $server -ScriptBlock {
+            $localCsvPath = "C:\Details.csv"
+
+            # Gather system information and installed patches
+            $osinfo = Get-WmiObject -Class Win32_OperatingSystem
+            $lastboottime = $osinfo.ConvertToDateTime($osinfo.LastBootUpTime)
+
+            $details = Get-HotFix | Sort-Object InstalledOn -Descending
+            $firstdate = $details | Select-Object -First 1
+            $latestdate = $firstdate.InstalledOn
+
+            $latestUpdates = $details | Where-Object { $_.InstalledOn -eq $latestdate }
+            $hotfixDetails = $latestUpdates | ForEach-Object { "$($_.HotFixID) ($($_.Description))" } -join "; "
+
+            # Create a custom object with all details
+            $detailstable = [PSCustomObject]@{
+                "ComputerName" = $env:COMPUTERNAME
+                "LastRebootTime" = $lastboottime
+                "Latest Patch Installed Date" = $latestdate
+                "Patches Installed" = $hotfixDetails
+            }
+
+            # Write the details to a CSV file locally on the remote server
+            $detailstable | Export-Csv -Path $localCsvPath -NoTypeInformation
+        }
+
+        # After gathering data from the remote server, read the CSV file from the remote server
+        $remoteCsvPath = "\\$server\C$\Details.csv"
+
+        if (Test-Path $remoteCsvPath) {
+            $data = Import-Csv -Path $remoteCsvPath
+
+            # Append the data to the final centralized CSV file
+            $data | Export-Csv -Path $finalCsvPath -Append -NoTypeInformation
+
+            # Remove the remote CSV file to clean up
+            Remove-Item -Path $remoteCsvPath
+        }
+    } catch {
+        # If the connection fails or the command fails, log failure details to the final CSV
+        $errorDetails = [PSCustomObject]@{
+            "ComputerName" = $server
+            "LastRebootTime" = "Failed to connect"
+            "Latest Patch Installed Date" = "Failed to connect"
+            "Patches Installed" = "Failed to connect"
+        }
+
+        # Append the error details to the final centralized CSV file
+        $errorDetails | Export-Csv -Path $finalCsvPath -Append -NoTypeInformation
+    }
+}
+
+Write-Host "Data collection completed. All details have been exported to $finalCsvPath"
