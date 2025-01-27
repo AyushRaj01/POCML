@@ -1,108 +1,79 @@
-# Load your data
-data = pd.read_csv(r'C:\\Users\\Ayush Raj\\OneDrive\\Desktop\\performanace.csv')
+import os
+import csv
+import subprocess
+from datetime import datetime
+from winrm import Session
 
-# Convert 'Interval' to datetime format
-try:
-    data['Interval'] = pd.to_datetime(data['Interval'], format='%d-%b-%y', errors='coerce')
-except Exception as e:
-    print("Error parsing dates:", e)
-    data['Interval'] = pd.to_datetime(data['Interval'], errors='coerce')
+# Read server list from file
+server_list_path = r"C:\Temp\Servers.txt"
+output_csv_path = r"C:\TEMP\Reboot_patching_log\Corp_RebootAndPatchingDetails.csv"
+service_account_username = "local\\dell_process"
+service_account_password = "abc@1223"
 
-# Drop rows with NaT values after conversion (if any)
-data.dropna(subset=['Interval'], inplace=True)
+# Ensure the output directory exists
+output_directory = os.path.dirname(output_csv_path)
+os.makedirs(output_directory, exist_ok=True)
 
-if data.empty:
-    raise ValueError("The dataset became empty after preprocessing. Please check the input data.")
+# Initialize results list
+results = []
 
-# Sort data by 'Interval' to maintain the time series order
-data = data.sort_values(by='Interval')
+# Function to run a PowerShell command remotely
+def invoke_command(server, username, password, command):
+    try:
+        session = Session(server, auth=(username, password), transport="ntlm")
+        response = session.run_ps(command)
+        if response.status_code == 0:
+            return response.std_out.decode()
+        else:
+            raise Exception(f"Error: {response.std_err.decode()}")
+    except Exception as e:
+        print(f"Failed to connect to {server}: {e}")
+        return None
 
-# Select the relevant columns for modeling
-# Assuming you want to forecast 'Average' using the historical data of 'Average', 'Min', 'Max', and 'Standard deviation'
-features = ['Min', 'Max', 'Average', 'Standard deviation']
-target = 'Average'
+# Script block to fetch details from the remote server
+script_block = r"""
+$osInfo = Get-WmiObject -Class Win32_OperatingSystem
+$lastboottime = $osInfo.ConvertToDateTime($osInfo.LastBootUpTime)
+$details = Get-HotFix | Sort-Object InstalledOn -Descending
+$firstdate = $details | Select-Object -First 1
+$latestdate = $firstdate.InstalledOn
+$latestUpdates = $details | Where-Object { $_.InstalledOn -eq $latestdate }
+$hotFixDetails = ($latestUpdates | ForEach-Object { "$($_.HotFixID) ($($_.Description))" }) -join ";"
+[PSCustomObject]@{
+    Computername = $env:COMPUTERNAME
+    LastRebootdate = $lastboottime
+    LatestPatchKB = $hotFixDetails
+    LatestPatchDate = $latestdate
+}
+"""
 
-# Feature scaling
-scaler = MinMaxScaler(feature_range=(0, 1))
-scaled_data = scaler.fit_transform(data[features])
+# Process each server
+with open(server_list_path, "r") as server_list_file:
+    server_list = server_list_file.readlines()
 
-# Prepare the data for LSTM
-sequence_length = 10  # Example sequence length
-X = []
-y = []
+for server in server_list:
+    server = server.strip()
+    print(f"Processing {server}...")
+    data = invoke_command(server, service_account_username, service_account_password, script_block)
+    if data:
+        try:
+            results.append(eval(data))
+        except Exception as e:
+            print(f"Error processing data from {server}: {e}")
+    else:
+        results.append({
+            "Computername": server,
+            "LastRebootdate": "Failed",
+            "LatestPatchKB": "Failed",
+            "LatestPatchDate": "Failed"
+        })
 
-for i in range(sequence_length, len(scaled_data)):
-    X.append(scaled_data[i-sequence_length:i])
-    y.append(scaled_data[i, features.index(target)])
+# Export results to CSV
+with open(output_csv_path, "w", newline="") as csvfile:
+    fieldnames = ["Computername", "LastRebootdate", "LatestPatchKB", "LatestPatchDate"]
+    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(results)
 
-X, y = np.array(X), np.array(y)
+print(f"Details exported to CSV at {output_csv_path}")
 
-# Split the data into training and validation sets
-X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.5, shuffle=False)
-
-# Build the LSTM model
-model = Sequential()
-model.add(LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
-model.add(Dropout(0.2))
-model.add(LSTM(50))
-model.add(Dropout(0.2))
-model.add(Dense(1))
-
-# Compile the model
-model.compile(optimizer='adam', loss='mean_squared_error')
-
-# Train the model
-history = model.fit(X_train, y_train, epochs=100, batch_size=32, validation_data=(X_val, y_val))
-
-# Model summary
-model.summary()
-
-# Predict on the validation set
-y_pred = model.predict(X_val)
-
-# Inverse transform to get the actual values
-# y_pred = scaler.inverse_transform([[0]*features.index(target) + [pred] + [0]*(len(features)-features.index(target)-1) for pred in y_pred])
-# y_val_actual = scaler.inverse_transform([[0]*features.index(target) + [val] + [0]*(len(features)-features.index(target)-1) for val in y_val])
-
-
-# Create placeholders with zeros
-y_pred_placeholder = np.zeros_like(scaled_data)
-y_val_actual_placeholder = np.zeros_like(scaled_data)
-
-# Calculate the starting index for predictions and actual values
-start_index = len(scaled_data) - len(y_val)  # Index where validation data starts
-
-# Place predicted values and actual values into the placeholder arrays
-y_pred_placeholder[start_index:, features.index(target)] = y_pred.flatten()
-y_val_actual_placeholder[start_index:, features.index(target)] = y_val
-
-# Inverse transform only the target column
-y_pred_actual = scaler.inverse_transform(y_pred_placeholder)[:, features.index(target)]
-y_val_actual_actual = scaler.inverse_transform(y_val_actual_placeholder)[:, features.index(target)]
-
-
-
-
-# Calculate accuracy metrics
-mae = mean_absolute_error(y_val_actual_actual, y_pred_actual)
-mse = mean_squared_error(y_val_actual_actual, y_pred_actual)
-rmse = np.sqrt(mse)
-mape = mean_absolute_percentage_error(y_val_actual_actual, y_pred_actual)
-mape_percentage = mape * 100
-
-print(f"Mean Absolute Error (MAE): {mae}")
-print(f"Mean Squared Error (MSE): {mse}")
-print(f"Root Mean Squared Error (RMSE): {rmse}")
-print(f"Mean Absolute Percentage Error (MAPE): {mape_percentage:.2f}%")
-
-# Adjust lengths for plotting
-plot_dates = data['Interval'].iloc[-len(y_val):]
-
-plt.figure(figsize=(10,6))
-plt.plot(plot_dates, y_val_actual_actual[-len(plot_dates):], color='blue', label='Actual Average')
-plt.plot(plot_dates, y_pred_actual[-len(plot_dates):], color='red', label='Predicted Average')
-plt.title('Average Forecasting')
-plt.xlabel('Date')
-plt.ylabel('Average')
-plt.legend()
-plt.show()
